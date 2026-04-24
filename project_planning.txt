@@ -1,0 +1,226 @@
+Month 6 Capstone Project — Personal Finance Tracker
+
+Why This Project
+The student grade tracker you built for month 3 already covered basic file I/O and JSON. This project is designed specifically to force you to use every month 6 concept simultaneously in a context that is genuinely more complex: multiple file formats (JSON for accounts, CSV for transaction exports, log files for audit trail), custom exceptions for every failure mode, context managers for file operations, pathlib throughout, the os and shutil modules for data management, and a proper logging setup that records every action.
+
+Project Overview
+A complete personal finance tracking application. Users manage multiple accounts (bank, savings, cash), record income and expense transactions with categories, view spending summaries, export data to CSV, import transactions from CSV files, and maintain a full audit log of every action. The application handles corrupted data files, missing files, invalid inputs and failed imports gracefully — never crashing, always logging.
+
+File Structure
+personal-finance-tracker/
+├── main.py
+├── models/
+│   ├── __init__.py
+│   ├── account.py
+│   ├── transaction.py
+│   └── category.py
+├── storage/
+│   ├── __init__.py
+│   ├── json_handler.py
+│   ├── csv_handler.py
+│   └── backup_handler.py
+├── core/
+│   ├── __init__.py
+│   ├── finance_manager.py
+│   └── report_generator.py
+├── exceptions.py
+├── logger.py
+├── display.py
+├── data/
+│   ├── finance.json
+│   ├── logs/
+│   │   └── finance.log
+│   └── exports/
+│       └── (csv exports go here)
+├── .gitignore
+├── README.md
+└── LICENSE
+
+Build Order
+1. exceptions.py          — no dependencies
+2. logger.py              — imports logging only
+3. models/category.py     — imports exceptions, logger
+4. models/transaction.py  — imports exceptions, logger, category
+5. models/account.py      — imports exceptions, logger, transaction
+6. models/__init__.py     — imports all three models
+7. storage/json_handler.py — imports pathlib, json, exceptions, logger, models
+8. storage/csv_handler.py  — imports csv, pathlib, exceptions, logger, models
+9. storage/backup_handler.py — imports shutil, pathlib, os, logger, exceptions
+10. storage/__init__.py    — imports all three handlers
+11. core/finance_manager.py — imports all storage and model modules
+12. core/report_generator.py — imports finance_manager, models
+13. core/__init__.py       — imports both core modules
+14. display.py             — imports models, core
+15. main.py               — imports everything
+
+File 1 — exceptions.py
+Imports needed: nothing
+Create a base exception class FinanceTrackerError inheriting from Exception. All other project exceptions inherit from this so callers can catch the whole family with one clause.
+AccountNotFoundError(FinanceTrackerError) — raised when looking up an account by name or ID that does not exist. Store the account name or ID as an attribute so the error message can include it.
+DuplicateAccountError(FinanceTrackerError) — raised when creating an account with a name that already exists. Store the conflicting name.
+InsufficientFundsError(FinanceTrackerError) — raised when an expense transaction would take an account balance below zero. Store the account name, the attempted amount and the current balance as separate attributes. The message should clearly state all three.
+InvalidTransactionError(FinanceTrackerError) — raised when transaction data fails validation. Store the field that failed and the value that was rejected.
+InvalidAmountError(InvalidTransactionError) — more specific subclass for when the amount specifically is wrong (negative, zero, non-numeric). Inherits from InvalidTransactionError.
+CategoryNotFoundError(FinanceTrackerError) — raised when a category name is not in the known categories list.
+DataCorruptionError(FinanceTrackerError) — raised when the JSON data file exists but cannot be parsed or has unexpected structure. Store the filepath and the underlying cause.
+ImportError(FinanceTrackerError) — raised when a CSV import fails. Store the filepath, the line number where failure occurred and the reason. Note: name it CSVImportError to avoid shadowing Python's built-in ImportError.
+BackupError(FinanceTrackerError) — raised when a backup operation fails. Store the source path and destination path.
+ExportError(FinanceTrackerError) — raised when a CSV export fails. Store the destination path and reason.
+
+File 2 — logger.py
+Imports needed: logging, pathlib.Path, logging.handlers.RotatingFileHandler
+setup_logger(name, log_file, console_level, file_level) — a function that creates and configures a named logger. Takes the logger name, the path to the log file, the console log level and the file log level as parameters.
+Inside the function: create the log directory using Path(log_file).parent.mkdir(parents=True, exist_ok=True). Create a RotatingFileHandler with a maximum file size of 1MB and a backup count of 3 — this means at most 3 archived log files exist alongside the current one. Create a StreamHandler for the console. Set different levels on each. Create a Formatter that includes timestamp, logger name, level and message. Add both handlers to the logger. Return the configured logger.
+At module level — call setup_logger immediately to create the application-wide logger and store it as logger. Import this logger object in every other file rather than calling logging.getLogger everywhere.
+The log format should be: 2025-03-20 14:32:01 | finance_tracker | INFO | Message here
+
+File 3 — models/category.py
+Imports needed: exceptions, logger from logger.py
+Category class
+__init__(self, name, category_type, description="") — name is a string, category_type is either "income" or "expense", description is optional. Validate that category_type is one of the two allowed values — raise InvalidTransactionError if not. Convert name to title case for consistency.
+Class variable DEFAULT_CATEGORIES — a dictionary of built-in categories split into income and expense. Income defaults: Salary, Freelance, Investment, Gift, Other Income. Expense defaults: Food, Transport, Entertainment, Health, Education, Rent, Utilities, Clothing, Other Expense. These are the categories that exist at startup without the user creating any.
+@classmethod create_default_categories(cls) — creates and returns a list of Category objects from the DEFAULT_CATEGORIES class variable.
+is_income(self) and is_expense(self) — return booleans.
+__str__ — returns "[Income] Salary" or "[Expense] Food" style.
+__repr__ — returns a technical representation.
+to_dict(self) — returns {"name": ..., "type": ..., "description": ...}.
+@classmethod from_dict(cls, data) — reconstructs from dictionary, raises DataCorruptionError if required keys are missing.
+
+File 4 — models/transaction.py
+Imports needed: datetime, uuid, exceptions, logger from logger.py
+Transaction class
+__init__(self, amount, category_name, transaction_type, description, account_name, date=None)
+
+transaction_id — generated automatically using str(uuid.uuid4())[:8] for a short unique ID
+amount — must be a positive float, raise InvalidAmountError if zero, negative or non-numeric
+category_name — string, validated against known categories later by the manager
+transaction_type — must be "income" or "expense", raise InvalidTransactionError if not
+description — string, can be empty, strip whitespace
+account_name — which account this transaction belongs to
+date — if None, set to datetime.date.today(). If provided, must be a datetime.date object or a valid ISO format string — convert and validate, raise InvalidTransactionError if unparseable
+
+@property amount and @amount.setter — use a property so the amount can never be set to an invalid value after construction. The setter raises InvalidAmountError if the new value is invalid.
+__str__ — formatted single line: "2025-03-20 | expense | Food | -€45.00 | Supermarket run"
+__repr__ — includes transaction ID.
+to_dict(self) — all attributes, date as ISO string.
+@classmethod from_dict(cls, data) — reconstructs from dictionary, raises DataCorruptionError on missing keys. Convert date string back to datetime.date using datetime.date.fromisoformat().
+
+File 5 — models/account.py
+Imports needed: datetime, exceptions, logger from logger.py, Transaction from transaction.py
+Account class
+__init__(self, name, account_type, initial_balance=0.0, currency="EUR")
+
+name — strip whitespace, raise InvalidTransactionError if empty
+account_type — one of "bank", "savings", "cash", "credit" — raise InvalidTransactionError if not
+balance — starts at initial_balance, validated as non-negative float
+currency — string, default EUR
+transactions — empty list, populated by add_transaction()
+created_date — datetime.date.today()
+
+add_transaction(self, transaction) — receives a Transaction object. If type is "expense" and amount would take balance below zero, raise InsufficientFundsError with account name, amount and current balance. Otherwise update balance (add for income, subtract for expense) and append to transactions list. Log the transaction at INFO level.
+get_balance(self) — returns current balance formatted to 2 decimal places.
+get_transactions_by_category(self, category_name) — returns filtered list.
+get_transactions_by_date_range(self, start_date, end_date) — filters transactions where start_date <= transaction.date <= end_date. Both parameters are datetime.date objects.
+get_income_total(self) and get_expense_total(self) — sum amounts by type.
+get_monthly_summary(self, year, month) — returns a dictionary with total income, total expense, net balance, and a breakdown by category for that specific month.
+__str__ — account name, type, balance with currency symbol.
+__repr__ — includes all key attributes.
+__len__ — number of transactions.
+to_dict(self) — all attributes, all transactions via their own to_dict() methods, date as ISO string.
+@classmethod from_dict(cls, data) — reconstructs fully including all transactions. Raises DataCorruptionError on structural issues.
+
+File 6 — models/__init__.py
+Imports needed: Account, Transaction, Category from their respective files
+Export all three classes so the rest of the project can do from models import Account, Transaction, Category.
+
+File 7 — storage/json_handler.py
+Imports needed: json, pathlib.Path, datetime, exceptions, logger, models
+This file is the heart of Month 6. Every file operation uses context managers and proper exception handling.
+DATA_PATH = Path("data/finance.json") — module-level constant.
+load_data() — the most complex function in this file.
+Start by checking if the file exists using Path.exists(). If it does not, return a default empty structure — a dictionary with empty lists for "accounts" and "categories". Log at INFO level that no data file was found and a fresh dataset is being created.
+If the file exists but has size zero (path.stat().st_size == 0), return the same default structure and log a WARNING.
+Open the file with a context manager: with DATA_PATH.open("r", encoding="utf-8") as f. Inside, call json.load(f) wrapped in a try/except. Catch json.JSONDecodeError as e and raise DataCorruptionError with the filepath and the original exception chained using raise DataCorruptionError(...) from e. Catch PermissionError separately and raise a DataCorruptionError with a message about file permissions.
+After loading, validate the structure — the data must be a dictionary with "accounts" and "categories" keys, both lists. If structure is wrong, raise DataCorruptionError. Log at DEBUG level the number of accounts and categories loaded.
+save_data(accounts, categories) — receives the current accounts list and categories list as Python objects.
+Build the dictionary to save: call to_dict() on each account and category object. Open the file with DATA_PATH.open("w", encoding="utf-8") in a context manager. Call json.dump(data, f, indent=4, ensure_ascii=False). Wrap everything in try/except catching PermissionError, OSError and any other IO errors — log them at ERROR level and re-raise as a custom exception. Log at DEBUG level on successful save.
+class DateTimeEncoder(json.JSONEncoder) — a custom JSON encoder subclass. Override default(self, obj) to handle datetime.date objects by returning obj.isoformat(). Pass this to json.dump as the cls parameter so datetime objects serialise automatically without manual conversion in every to_dict() method.
+
+File 8 — storage/csv_handler.py
+Imports needed: csv, pathlib.Path, datetime, exceptions, logger, models
+EXPORTS_PATH = Path("data/exports") — module-level constant.
+export_transactions_csv(account, filename=None) — exports all transactions from one account to a CSV file.
+Build the filename from the account name and today's date if not provided: f"{account.name}_{datetime.date.today().isoformat()}.csv". Ensure the exports directory exists using EXPORTS_PATH.mkdir(parents=True, exist_ok=True). Build the full path.
+Open the file with open(filepath, "w", newline="", encoding="utf-8") — the newline="" is critical for CSV on Windows. Use csv.DictWriter with fieldnames ["date", "type", "category", "amount", "description", "account"]. Call writer.writeheader(). Loop over transactions and call writer.writerow(transaction.to_dict()) for each. Wrap in try/except catching PermissionError and OSError, raise as ExportError. Log the export path and number of rows written at INFO level. Return the export filepath.
+export_all_accounts_csv(accounts, filename=None) — same pattern but writes all transactions from all accounts into a single file. Add a "balance_after" column that shows the running balance after each transaction.
+import_transactions_csv(filepath, account, category_names) — imports transactions from a CSV file into an account.
+Open with open(filepath, "r", newline="", encoding="utf-8"). Use csv.DictReader which automatically uses the first row as headers. Loop through rows with enumerate(reader, start=2) so you can reference the line number in error messages (line 1 is the header).
+For each row, wrap the validation and object creation in a try/except. Validate that required columns exist — raise CSVImportError with the line number if a column is missing. Validate and convert the amount to float — raise CSVImportError with the line number if conversion fails. Validate the category exists in category_names — raise CSVImportError if not. Create a Transaction object — catch InvalidTransactionError and re-raise as CSVImportError with the line number.
+Collect successful transactions in a list. At the end, if any rows failed, log warnings for each failure and continue with the successful ones — don't abort the whole import because of one bad row. Return a tuple of (successful_transactions, failed_rows) so the caller knows what happened. Log the import summary at INFO level.
+
+File 9 — storage/backup_handler.py
+Imports needed: shutil, pathlib.Path, os, datetime, exceptions, logger
+BACKUP_DIR = Path("data/backups") — module-level constant.
+create_backup(source_path) — creates a timestamped backup of the data file.
+Build the backup filename using the current timestamp: f"finance_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json". Ensure the backup directory exists. Use shutil.copy2(source_path, backup_path) — copy2 preserves the original file's metadata including modification time. Wrap in try/except catching FileNotFoundError (source doesn't exist), PermissionError and OSError, raising BackupError for each. Log at INFO level with source and destination paths. Return the backup path.
+restore_backup(backup_filename, target_path) — restores a specific backup file.
+Build the full backup path. Check it exists — raise BackupError if not. First create a backup of the current data before overwriting it (belt and braces). Use shutil.copy2(backup_path, target_path) to restore. Log at WARNING level since this is a destructive operation — always log restorations. Return True on success.
+list_backups() — returns a sorted list of all backup files with their metadata.
+Use BACKUP_DIR.glob("finance_backup_*.json") to find all backup files. For each, get the file size via .stat().st_size and the modification time via .stat().st_mtime. Return a list of dictionaries sorted by modification time descending (newest first).
+cleanup_old_backups(keep_n=10) — deletes all but the most recent N backups.
+Get the sorted list from list_backups(). If more than keep_n exist, slice off the oldest ones and delete each using .unlink(). Log each deletion at DEBUG level. Log the cleanup summary at INFO level. Return the number of files deleted.
+
+File 10 — storage/__init__.py
+Imports needed: key functions from all three handlers
+Export the most commonly used functions so the rest of the project can do from storage import load_data, save_data, export_transactions_csv, import_transactions_csv, create_backup.
+
+File 11 — core/finance_manager.py
+Imports needed: exceptions, logger, models, storage
+This is the orchestration layer. It holds the application state in memory and coordinates between models and storage.
+FinanceManager class
+__init__(self) — load data by calling load_data() from json_handler. Reconstruct Account objects from the loaded dictionaries using Account.from_dict(). Reconstruct Category objects using Category.from_dict(). If no categories exist, call Category.create_default_categories() and save. Store accounts as a dictionary keyed by name for O(1) lookup. Store categories as a dictionary keyed by name.
+_save(self) — private method. Calls create_backup() first, then save_data() with the current state. Centralises all save-and-backup logic so every mutation method calls this one method. Log at DEBUG level.
+create_account(self, name, account_type, initial_balance=0.0) — check the name doesn't already exist, raise DuplicateAccountError if it does. Create the Account object. Add to accounts dictionary. Call _save(). Log at INFO level. Return the new account.
+get_account(self, name) — look up by name, raise AccountNotFoundError if not found.
+delete_account(self, name) — get the account (raising AccountNotFoundError if absent), remove from dictionary, call _save(). Log at WARNING level since deletion is irreversible.
+add_transaction(self, account_name, amount, category_name, transaction_type, description, date=None) — get the account. Validate category exists, raise CategoryNotFoundError if not. Create a Transaction object — let InvalidAmountError and InvalidTransactionError propagate naturally. Call account.add_transaction(transaction) — let InsufficientFundsError propagate. Call _save(). Log at INFO level. Return the transaction.
+add_category(self, name, category_type, description="") — check for duplicates, create Category, add to dictionary, save.
+get_spending_by_category(self, account_name=None, start_date=None, end_date=None) — aggregate expense totals per category across all accounts or a specific account, optionally filtered by date range. Returns a dictionary of category name to total amount, sorted by total descending.
+get_monthly_overview(self, year, month) — aggregate income and expenses across all accounts for a given month. Returns total income, total expenses, net, and a per-account breakdown.
+get_net_worth(self) — sum all account balances and return the total.
+
+File 12 — core/report_generator.py
+Imports needed: datetime, pathlib.Path, logger, exceptions, core.finance_manager.FinanceManager
+ReportGenerator class
+__init__(self, manager) — receives a FinanceManager instance.
+generate_monthly_report(self, year, month) — calls manager.get_monthly_overview() and formats the result into a multi-line string with clean column alignment. Returns the formatted string.
+generate_category_breakdown(self, account_name=None) — calls manager.get_spending_by_category() and formats as a sorted table with amounts and percentages of total spending.
+generate_net_worth_report(self) — formats current balances across all accounts with a total at the bottom.
+save_report_to_file(self, report_content, filename) — saves a report string to a text file in data/exports/. Uses Path.write_text(report_content, encoding="utf-8"). Wraps in try/except for IO errors. Logs the file path at INFO level. Returns the path.
+
+File 13 — display.py
+Imports needed: models, core, datetime
+All terminal output functions. Nothing in this file modifies data or handles errors beyond printing friendly messages.
+display_menu(net_worth) — main menu with current net worth displayed in the header.
+display_accounts(accounts) — formatted table of all accounts with name, type, balance and transaction count.
+display_transactions(transactions, title="Transactions") — numbered list with date, type, category, amount and description. Handles empty list case gracefully.
+display_monthly_summary(summary, year, month) — formatted summary showing income, expenses, net and category breakdown.
+display_category_breakdown(breakdown) — table with category, total amount and percentage bar drawn with block characters.
+display_import_result(successful, failed) — shows how many rows imported successfully and lists any failures with their line numbers.
+display_backup_list(backups) — numbered list of backups with filename, size and date.
+
+File 14 — main.py
+Imports needed: FinanceManager from core, ReportGenerator from core, all storage functions, all display functions, exceptions, logger, datetime
+main() — instantiate FinanceManager and ReportGenerator inside a try/except that catches DataCorruptionError and offers the user the option to restore a backup or start fresh. Run the while True menu loop.
+Every menu action wraps the core operation in a try/except that catches the specific exceptions that operation can raise and prints user-friendly messages. Never let a raw traceback reach the user. Always log the full exception at ERROR level using logger.exception("message") which automatically includes the traceback in the log file.
+The menu should cover: view accounts, add account, delete account, add transaction, view transactions, view monthly summary, view category breakdown, export to CSV, import from CSV, view and restore backups, generate and save report, quit.
+On quit: call _save() on the manager one final time, log "Application closed cleanly" at INFO level.
+if __name__ == "__main__": main() at the bottom.
+
+.gitignore additions
+Add these lines to your .gitignore:
+data/finance.json
+data/logs/
+data/exports/
+data/backups/
+Include data/finance_example.json as always with three sample accounts and some transactions to demonstrate the structure.
