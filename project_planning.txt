@@ -63,7 +63,7 @@ InvalidTransactionError(FinanceTrackerError) — raised when transaction data fa
 InvalidAmountError(InvalidTransactionError) — more specific subclass for when the amount specifically is wrong (negative, zero, non-numeric). Inherits from InvalidTransactionError.
 CategoryNotFoundError(FinanceTrackerError) — raised when a category name is not in the known categories list.
 DataCorruptionError(FinanceTrackerError) — raised when the JSON data file exists but cannot be parsed or has unexpected structure. Store the filepath and the underlying cause.
-ImportError(FinanceTrackerError) — raised when a CSV import fails. Store the filepath, the line number where failure occurred and the reason. Note: name it CSVImportError to avoid shadowing Python's built-in ImportError.
+CSVImportError(FinanceTrackerError) — raised when a CSV import fails. Store the filepath, the line number where failure occurred and the reason. Note: name it CSVImportError to avoid shadowing Python's built-in ImportError.
 BackupError(FinanceTrackerError) — raised when a backup operation fails. Store the source path and destination path.
 ExportError(FinanceTrackerError) — raised when a CSV export fails. Store the destination path and reason.
 
